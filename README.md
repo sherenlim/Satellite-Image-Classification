@@ -7,7 +7,7 @@ This repository provides a final exam project for classifying satellite images u
 ## Features
 
 - Utilizes **MobileNetV2** and **DenseNet121** as feature extractors.
-- Combines extracted features for improved classification accuracy.
+- Combines extracted features for improved classification performance.
 - Includes training, validation, and evaluation processes.
 - Provides visualizations for loss, accuracy, and confusion matrix.
 - Generates a detailed classification report.
