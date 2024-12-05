@@ -1,0 +1,200 @@
+!pip install kaggle
+from google.colab import files
+files.upload()  # Upload kaggle.json file
+!mkdir -p ~/.kaggle
+!cp kaggle.json ~/.kaggle/
+!chmod 600 ~/.kaggle/kaggle.json
+!kaggle datasets download -d mahmoudreda55/satellite-image-classification
+!unzip satellite-image-classification.zip -d /content/dataset
+
+import os
+import numpy as np
+from PIL import Image
+import tensorflow as tf
+from tensorflow.keras import layers, models, optimizers
+from tensorflow.keras.applications import MobileNetV2, DenseNet121
+from tensorflow.keras.utils import to_categorical
+from sklearn.metrics import classification_report, confusion_matrix
+import matplotlib.pyplot as plt
+import pandas as pd
+
+# Plot some sample images
+categories = os.listdir('/content/dataset/data')
+print('Some example images')
+
+fig, axs = plt.subplots(3, len(categories), figsize=(10, 5))
+for ci, ctg in enumerate(categories):
+    for i, ii in enumerate([10, 20, 30]):
+        imgName = os.listdir(f"/content/dataset/data/{ctg}")[ii]
+        theImg = Image.open(f"/content/dataset/data/{ctg}/{imgName}")
+        axs[i, ci].imshow(np.array(theImg)[:64, :64, :3])
+        axs[i, ci].set_title(ctg)
+        axs[i, ci].axis('off')
+plt.show()
+
+# Load images and labels
+n_cat = len(categories)
+n_per_cat = [len(os.listdir(f"/content/dataset/data/{ctg}")) for ctg in categories]
+n_total = int(np.sum(n_per_cat))
+min_n_per_cat = min(n_per_cat)
+print(f"The fewest pictures we have of one category are {min_n_per_cat}")
+
+all_imgs = np.zeros((n_total, 64, 64, 3), dtype=np.float32)
+all_lbls = np.zeros((n_total, 1), dtype=int)
+img_counter = 0
+
+for ci, ctg in enumerate(categories):
+    theDir = f"/content/dataset/data/{ctg}"
+    imgsInDir = os.listdir(theDir)
+    for img_i in imgsInDir:
+        im = Image.open(f"/content/dataset/data/{ctg}/{img_i}")
+        all_imgs[img_counter] = np.array(im.resize((64, 64)))[:64, :64, :3]
+        all_lbls[img_counter] = ci
+        img_counter += 1
+
+# Create balanced train & test sets
+n_train = int(min_n_per_cat * 0.8)
+n_test = min_n_per_cat - n_train
+train_inds, test_inds = [], []
+
+for ci in range(n_cat):
+    cat_index = np.where(all_lbls == ci)[0]
+    np.random.shuffle(cat_index)
+    train_inds.extend(cat_index[:n_train])
+    test_inds.extend(cat_index[n_train:min_n_per_cat])
+
+np.random.shuffle(train_inds)
+np.random.shuffle(test_inds)
+
+train_imgs, train_lbls = all_imgs[train_inds], all_lbls[train_inds]
+test_imgs, test_lbls = all_imgs[test_inds], all_lbls[test_inds]
+
+# One-hot encode the labels
+train_lbls = to_categorical(train_lbls, num_classes=n_cat)
+test_lbls = to_categorical(test_lbls, num_classes=n_cat)
+
+# Check shapes after encoding
+print(f"Train Labels Shape: {train_lbls.shape}")  # Should be (num_samples, n_cat)
+print(f"Test Labels Shape: {test_lbls.shape}")    # Should be (num_samples, n_cat)
+
+from tensorflow.keras.metrics import Precision, Recall
+from tensorflow.keras import backend as K
+
+def create_combined_model(learning_rate=0.001, dense_units=128, dropout_rate=0.4):
+    # Load MobileNetV2
+    mobilenet_base = MobileNetV2(weights='imagenet', include_top=False, input_shape=(64, 64, 3))
+    for layer in mobilenet_base.layers:
+        layer.trainable = False  # Freeze MobileNetV2 layers
+
+    # Load DenseNet121
+    densenet_base = DenseNet121(weights='imagenet', include_top=False, input_shape=(64, 64, 3))
+    for layer in densenet_base.layers:
+        layer.trainable = False  # Freeze DenseNet121 layers
+
+    # Extract features
+    mobilenet_features = mobilenet_base.output
+    mobilenet_features = layers.GlobalAveragePooling2D()(mobilenet_features)
+
+    densenet_features = densenet_base.output
+    densenet_features = layers.GlobalAveragePooling2D()(densenet_features)
+
+    # Combine features
+    combined_features = layers.Concatenate()([mobilenet_features, densenet_features])
+
+    # Add dense layers for classification
+    x = layers.Dense(dense_units, activation='relu')(combined_features)
+    x = layers.BatchNormalization()(x)
+    x = layers.Dropout(dropout_rate)(x)
+    output = layers.Dense(len(categories), activation='softmax')(x)
+
+    # Create model
+    combined_model = models.Model(
+        inputs=[mobilenet_base.input, densenet_base.input],
+        outputs=output
+    )
+
+    # Compile the model
+    optimizer = optimizers.Adam(learning_rate=learning_rate)
+    combined_model.compile(
+        optimizer=optimizer,
+        loss='categorical_crossentropy',
+        metrics=['accuracy', tf.keras.metrics.Precision(name='precision'),
+                 tf.keras.metrics.Recall(name='recall')]
+    )
+
+    return combined_model
+
+# Create and summarize the model
+combined_model = create_combined_model(learning_rate=0.0001, dense_units=128, dropout_rate=0.4)
+print("\nModel Summary:\n")
+combined_model.summary()
+
+# Train the model
+history = combined_model.fit(
+    [train_imgs, train_imgs],  # Pass inputs twice (for both models)
+    train_lbls,
+    validation_data=([test_imgs, test_imgs], test_lbls),
+    epochs=20,
+    batch_size=32
+)
+
+# Plotting Loss
+plt.figure(figsize=(12, 6))
+
+# Loss for training and validation
+plt.subplot(1, 2, 1)
+plt.plot(history.history['loss'], label='Train Loss')
+plt.plot(history.history['val_loss'], label='Validation Loss')
+plt.title('Training and Validation Loss')
+plt.xlabel('Epochs')
+plt.ylabel('Loss')
+plt.legend()
+
+# Accuracy for training and validation
+plt.subplot(1, 2, 2)
+plt.plot(history.history['accuracy'], label='Train Accuracy')
+plt.plot(history.history['val_accuracy'], label='Validation Accuracy')
+plt.title('Training and Validation Accuracy')
+plt.xlabel('Epochs')
+plt.ylabel('Accuracy')
+plt.legend()
+
+# Display the plots
+plt.tight_layout()
+plt.show()
+
+# Evaluate the model
+test_loss, test_acc, test_precision, test_recall = combined_model.evaluate([test_imgs, test_imgs], test_lbls)
+print(f"\nTest Accuracy: {test_acc}")
+print(f"Test Precision: {test_precision}")
+print(f"Test Recall: {test_recall}")
+
+# Confusion Matrix and Normalization
+y_pred = np.argmax(combined_model.predict([test_imgs, test_imgs]), axis=1)
+y_true = np.argmax(test_lbls, axis=1)
+
+con_mat = confusion_matrix(y_true, y_pred)
+con_mat_df = pd.DataFrame(con_mat, index=categories, columns=categories)
+
+# Plot Confusion Matrix
+plt.figure(figsize=(8, 8))
+plt.imshow(con_mat_df, cmap='coolwarm')
+plt.colorbar()
+
+# Add counts to each cell, remove the normalized values
+for i in range(len(categories)):
+    for j in range(len(categories)):
+        plt.text(j, i, f"{con_mat[i, j]}", ha="center", va="center", color="white")
+
+plt.xticks(ticks=np.arange(len(categories)), labels=categories, rotation=45)
+plt.yticks(ticks=np.arange(len(categories)), labels=categories)
+plt.title('Confusion Matrix with Counts')
+plt.xlabel('Predicted')
+plt.ylabel('Actual')
+plt.tight_layout()
+plt.show()
+
+# Classification Report
+report = classification_report(y_true, y_pred, target_names=categories)
+print("Classification Report:\n", report)
+
