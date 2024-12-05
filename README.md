@@ -1,6 +1,6 @@
 # Satellite Image Classification using MobileNetV2 and DenseNet121
 
-This repository provides a project for classifying satellite images using a combination of MobileNetV2 and DenseNet121 pre-trained models. The project is designed to preprocess, train, and evaluate a deep learning model on the `Satellite Image Classification` dataset.
+This repository provides a final exam project for classifying satellite images using a combination of MobileNetV2 and DenseNet121 pre-trained models. The project is designed to preprocess, train, and evaluate a deep learning model on the `Satellite Image Classification` dataset.
 
 ---
 
